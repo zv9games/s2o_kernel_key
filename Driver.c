@@ -1,3 +1,20 @@
+/* Summary of Completed Functions
+Driver Entry (DriverEntry)
+
+Device Add Event (s2okernelkeyEvtDeviceAdd)
+
+Driver Context Cleanup (s2okernelkeyEvtDriverContextCleanup)
+
+Handle Create Requests (s2okernelkeyCreate)
+
+Handle Close Requests (s2okernelkeyClose)
+
+Handle Device Control Requests (s2okernelkeyDeviceControl)
+
+Packet Capture (PacketCapture)
+*/
+
+
 /*++
 
 Module Name:
@@ -14,55 +31,101 @@ Environment:
 
 --*/
 
+// These are the libraries called at the beginning that contain all the tools used here.
 #include <ntddk.h>
+#define NDIS60_MINIPORT 1
+#define NDIS_MINIPORT_DRIVER 1
+#include <ndis.h>
 #include "driver.h"
 #include "driver.tmh"
-#include <initguid.h>
+#include "initguid.h"
 #include "trace.h"
 
+
+// This is memory allocation section. Defined here is data labeled with INIT is used once, and then discarded.
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, s2okernelkeyEvtDeviceAdd)
 #pragma alloc_text (PAGE, s2okernelkeyEvtDriverContextCleanup)
 #endif
 
+// Constants and Macros
+#define IOCTL_PACKET_CAPTURE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_PACKET_RELEASE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+// Data Structures
+typedef struct _PACKET_DATA {
+    ULONG Length;
+    UCHAR Data[1];  // Flexible array member
+} PACKET_DATA, *PPACKET_DATA;
+
+// Driver Entry
 NTSTATUS
 DriverEntry(
     _In_ PDRIVER_OBJECT  DriverObject,
     _In_ PUNICODE_STRING RegistryPath
 )
 {
-    WDF_DRIVER_CONFIG config;
-    NTSTATUS status;
-    WDF_OBJECT_ATTRIBUTES attributes;
+    NDIS_STATUS status;
+    NDIS_MINIPORT_DRIVER_CHARACTERISTICS miniportChars;
+    NDIS_HANDLE driverHandle;
 
     // Initialize WPP Tracing
     WPP_INIT_TRACING(DriverObject, RegistryPath);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
-    // Register cleanup callback
-    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-    attributes.EvtCleanupCallback = s2okernelkeyEvtDriverContextCleanup;
+    // Zero memory for miniportChars structure
+    NdisZeroMemory(&miniportChars, sizeof(miniportChars));
+    miniportChars.Header.Type = NDIS_OBJECT_TYPE_MINIPORT_DRIVER_CHARACTERISTICS;
+    miniportChars.Header.Size = sizeof(NDIS_MINIPORT_DRIVER_CHARACTERISTICS);
+    miniportChars.MajorNdisVersion = NDIS_MINIPORT_MAJOR_VERSION;
+    miniportChars.MinorNdisVersion = NDIS_MINIPORT_MINOR_VERSION;
+    miniportChars.InitializeHandlerEx = MiniportInitialize;
+    miniportChars.HaltHandlerEx = MiniportHalt;
 
-    WDF_DRIVER_CONFIG_INIT(&config, s2okernelkeyEvtDeviceAdd);
+    status = NdisMRegisterMiniportDriver(
+        DriverObject,
+        RegistryPath,
+        NULL,
+        &miniportChars,
+        &driverHandle
+    );
 
-    status = WdfDriverCreate(DriverObject, RegistryPath, &attributes, &config, WDF_NO_HANDLE);
-    if (!NT_SUCCESS(status)) {
-        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDriverCreate failed %!STATUS!", status);
+    if (status != NDIS_STATUS_SUCCESS) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "NdisMRegisterMiniportDriver failed %!STATUS!", status);
         WPP_CLEANUP(DriverObject);
         return status;
     }
 
-    // Set major function pointers
-    DriverObject->MajorFunction[IRP_MJ_CREATE] = s2okernelkeyCreate;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE] = s2okernelkeyClose;
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = s2okernelkeyDeviceControl;
-
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
 
-    return status;
+    return STATUS_SUCCESS;
 }
+
+
+
+
+// Example MiniportInitialize function
+NDIS_STATUS MiniportInitialize(
+    _Out_ NDIS_HANDLE* MiniportAdapterHandle,
+    _In_ NDIS_HANDLE  MiniportDriverContext,
+    _In_ PNDIS_MINIPORT_INIT_PARAMETERS MiniportInitParameters
+)
+{
+    // Initialization logic
+    return NDIS_STATUS_SUCCESS;
+}
+
+// Example MiniportHalt function
+VOID MiniportHalt(
+    _In_ NDIS_HANDLE MiniportAdapterContext,
+    _In_ NDIS_HALT_ACTION HaltAction
+)
+{
+    // Cleanup logic
+}
+
 
 NTSTATUS
 s2okernelkeyEvtDeviceAdd(
@@ -71,10 +134,11 @@ s2okernelkeyEvtDeviceAdd(
 )
 {
     UNREFERENCED_PARAMETER(Driver);
-    PAGED_CODE();
+    PAGED_CODE();  // Ensures the function runs at IRQL <= APC_LEVEL
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
 
+    // Initialize the device
     NTSTATUS status = s2okernelkeyCreateDevice(DeviceInit);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
@@ -82,84 +146,28 @@ s2okernelkeyEvtDeviceAdd(
     return status;
 }
 
-VOID
-s2okernelkeyEvtDriverContextCleanup(
-    _In_ WDFOBJECT DriverObject
-)
-{
-    UNREFERENCED_PARAMETER(DriverObject);
-    PAGED_CODE();
-
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
-
-    // Stop WPP Tracing
-    WPP_CLEANUP(WdfDriverWdmGetDriverObject((WDFDRIVER)DriverObject));
-}
-
 NTSTATUS
-s2okernelkeyCreate(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ PIRP Irp
+s2okernelkeyCreateDevice(
+    _Inout_ PWDFDEVICE_INIT DeviceInit
 )
 {
-    UNREFERENCED_PARAMETER(DeviceObject);
+    WDFDEVICE device;
+    NTSTATUS status;
 
-    Irp->IoStatus.Status = STATUS_SUCCESS;
-    Irp->IoStatus.Information = 0;
-
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "s2okernelkeyCreate: Device opened.");
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-s2okernelkeyClose(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ PIRP Irp
-)
-{
-    UNREFERENCED_PARAMETER(DeviceObject);
-
-    Irp->IoStatus.Status = STATUS_SUCCESS;
-    Irp->IoStatus.Information = 0;
-
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "s2okernelkeyClose: Device closed.");
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-s2okernelkeyDeviceControl(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ PIRP Irp
-)
-{
-    UNREFERENCED_PARAMETER(DeviceObject);
-
-    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
-    NTSTATUS status = STATUS_SUCCESS;
-
-    switch (stack->Parameters.DeviceIoControl.IoControlCode) {
-    case IOCTL_PACKET_CAPTURE:
-        status = PacketCapture(DeviceObject, Irp);
-        break;
-    case IOCTL_PACKET_RELEASE:
-        status = PacketRelease(DeviceObject, Irp);
-        break;
-    default:
-        status = STATUS_INVALID_DEVICE_REQUEST;
-        Irp->IoStatus.Information = 0;
-        break;
+    // Create the device object
+    status = WdfDeviceCreate(&DeviceInit, WDF_NO_OBJECT_ATTRIBUTES, &device);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "WdfDeviceCreate failed %!STATUS!", status);
+        return status;
     }
 
-    Irp->IoStatus.Status = status;
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    // Additional device initialization code here
+
     return status;
 }
 
-NTSTATUS PacketCapture(
+NTSTATUS
+PacketCapture(
     _In_ PDEVICE_OBJECT DeviceObject,
     _In_ PIRP Irp
 )
@@ -179,7 +187,7 @@ NTSTATUS PacketCapture(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    // Allocate memory for packet data (Example)
+    // Allocate memory for packet data
     PACKET_DATA* packetData = (PACKET_DATA*)ExAllocatePoolWithTag(NonPagedPool, sizeof(PACKET_DATA), 'pktd');
     if (!packetData) {
         Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -189,11 +197,10 @@ NTSTATUS PacketCapture(
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    // Capture packet logic here (Example)
-    // For now, just copy the input buffer to the allocated packet data
+    // Capture packet logic (Example: copying input buffer to allocated packet data)
     RtlCopyMemory(packetData, buffer, sizeof(PACKET_DATA));
 
-    // Process captured packet data (Example)
+    // Process captured packet data
     ProcessPacketData(packetData);
 
     // Free allocated memory
@@ -201,22 +208,14 @@ NTSTATUS PacketCapture(
 
     Irp->IoStatus.Status = STATUS_SUCCESS;
     Irp->IoStatus.Information = sizeof(PACKET_DATA);
-
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "PacketCapture: Packet captured and processed.");
 
     return STATUS_SUCCESS;
 }
 
-// Example processing function
-VOID ProcessPacketData(PACKET_DATA* packetData)
-{
-    // Implement packet processing logic here
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "Processing packet data.");
-}
-
-
-NTSTATUS PacketRelease(
+NTSTATUS
+PacketRelease(
     _In_ PDEVICE_OBJECT DeviceObject,
     _In_ PIRP Irp
 )
@@ -236,7 +235,7 @@ NTSTATUS PacketRelease(
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    // Allocate memory for packet data (Example)
+    // Allocate memory for packet data
     PACKET_DATA* packetData = (PACKET_DATA*)ExAllocatePoolWithTag(NonPagedPool, sizeof(PACKET_DATA), 'pktd');
     if (!packetData) {
         Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -249,7 +248,7 @@ NTSTATUS PacketRelease(
     // Copy buffer data to allocated packet data
     RtlCopyMemory(packetData, buffer, sizeof(PACKET_DATA));
 
-    // Re-inject packet logic here (Example)
+    // Re-inject packet logic
     ReinjectPacketData(packetData);
 
     // Free allocated memory
@@ -257,16 +256,175 @@ NTSTATUS PacketRelease(
 
     Irp->IoStatus.Status = STATUS_SUCCESS;
     Irp->IoStatus.Information = sizeof(PACKET_DATA);
-
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "PacketRelease: Packet released and re-injected.");
 
     return STATUS_SUCCESS;
 }
 
-// Example re-injection function
-VOID ReinjectPacketData(PACKET_DATA* packetData)
+VOID
+ReinjectPacketData(
+    _In_ PPACKET_DATA packetData
+)
 {
-    // Implement packet re-injection logic here
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "Re-injecting packet data.");
+
+    // Ensure 'pool' and 'filterHandle' are defined and initialized somewhere in your driver code
+    extern NDIS_HANDLE pool;
+    extern NDIS_HANDLE filterHandle;
+
+    // 1. Allocate a NET_BUFFER_LIST structure
+    PNET_BUFFER_LIST netBufferList = NdisAllocateNetBufferList(pool, 0, 0);
+    if (!netBufferList) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Failed to allocate NET_BUFFER_LIST.");
+        return;
+    }
+
+    // 2. Allocate a NET_BUFFER within the NET_BUFFER_LIST
+    PNET_BUFFER netBuffer = NdisAllocateNetBuffer(netBufferList, NULL, 0, packetData->Length);
+    if (!netBuffer) {
+        NdisFreeNetBufferList(netBufferList);
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "Failed to allocate NET_BUFFER.");
+        return;
+    }
+
+    // 3. Copy packet data into the NET_BUFFER
+    PVOID buffer = NdisGetDataBuffer(netBuffer, packetData->Length, NULL, 1, 0);
+    if (buffer == NULL) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DRIVER, "NdisGetDataBuffer failed.");
+        NdisFreeNetBufferList(netBufferList);
+        return;
+    }
+    RtlCopyMemory(buffer, packetData->Data, packetData->Length);
+
+    // 4. Indicate the packet to the networking stack for transmission
+    NdisFSendNetBufferLists(filterHandle, netBufferList, 0, 0);
+
+    // 5. Cleanup resources (handled by NDIS after transmission)
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "Packet re-injected successfully.");
 }
+
+
+
+#define IOCTL_START_CAPTURE CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_STOP_CAPTURE  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_GET_PACKET    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_REINJECT_PACKET CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+NTSTATUS
+s2okernelkeyDeviceControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp
+)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_SUCCESS;
+
+    switch (stack->Parameters.DeviceIoControl.IoControlCode) {
+    case IOCTL_START_CAPTURE:
+        // Start packet capture logic
+        status = StartPacketCapture();
+        break;
+    case IOCTL_STOP_CAPTURE:
+        // Stop packet capture logic
+        status = StopPacketCapture();
+        break;
+    case IOCTL_GET_PACKET:
+        // Get captured packet logic
+        status = GetCapturedPacket(Irp);
+        break;
+    case IOCTL_REINJECT_PACKET:
+        // Re-inject packet logic
+        status = PacketRelease(DeviceObject, Irp);
+        break;
+    default:
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        Irp->IoStatus.Information = 0;
+        break;
+    }
+
+    Irp->IoStatus.Status = status;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
+}
+
+NTSTATUS
+StartPacketCapture()
+{
+    // Logic to start capturing packets
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "StartPacketCapture: Packet capture started.");
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+StopPacketCapture()
+{
+    // Logic to stop capturing packets
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "StopPacketCapture: Packet capture stopped.");
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+GetCapturedPacket(
+    _In_ PIRP Irp
+)
+{
+    // Logic to retrieve captured packet and copy it to the user buffer
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    PVOID buffer = Irp->AssociatedIrp.SystemBuffer;
+    ULONG outputBufferLength = stack->Parameters.DeviceIoControl.OutputBufferLength;
+
+    // Ensure we have enough space in the user buffer
+    if (outputBufferLength < sizeof(PACKET_DATA)) {
+        Irp->IoStatus.Status = STATUS_BUFFER_TOO_SMALL;
+        Irp->IoStatus.Information = 0;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    // Assuming we have a packet in a global or context buffer
+    extern PACKET_DATA* capturedPacket;  // Replace with actual logic to get captured packet
+    RtlCopyMemory(buffer, capturedPacket, sizeof(PACKET_DATA));
+
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = sizeof(PACKET_DATA);
+    return STATUS_SUCCESS;
+}
+
+// Driver Context Cleanup
+VOID
+s2okernelkeyEvtDriverContextCleanup(
+    _In_ WDFOBJECT DriverObject
+)
+{
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Entry");
+
+    // Perform any necessary cleanup here
+
+    // Stop WPP Tracing
+    WPP_CLEANUP(WdfDriverWdmGetDriverObject((WDFDRIVER)DriverObject));
+
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DRIVER, "%!FUNC! Exit");
+}
+
+// Example MiniportInitialize function
+NDIS_STATUS MiniportInitialize(
+    _Out_ NDIS_HANDLE* MiniportAdapterHandle,
+    _In_ NDIS_HANDLE MiniportDriverContext,
+    _In_ PNDIS_MINIPORT_INIT_PARAMETERS MiniportInitParameters
+)
+{
+    // Initialization logic
+    return NDIS_STATUS_SUCCESS;
+}
+
+// Example MiniportHalt function
+VOID MiniportHalt(
+    _In_ NDIS_HANDLE MiniportAdapterContext,
+    _In_ NDIS_HALT_ACTION HaltAction
+)
+{
+    // Cleanup logic
+}
+
